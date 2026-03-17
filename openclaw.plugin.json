@@ -1,0 +1,13 @@
+{
+  "id": "woabot",
+  "name": "WOA Bot Channel",
+  "description": "WOA Bot channel plugin — connects to WPS via server Lark-compatible API, with report skill",
+  "channels": ["woabot"],
+  "skills": ["skills/woabot-report"],
+  "capabilities": {},
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
