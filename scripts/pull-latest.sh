@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# QQBot 拉取最新 npm 包并更新脚本
-# 从 npm 下载 @sliverp/qqbot@latest，解压覆盖本地源码，重新安装插件并重启
-# 兼容 clawdbot / openclaw / moltbot，macOS 开箱即用
+# WoA Bot 拉取最新 npm 包并更新脚本
+# 从 npm 下载 @sliverp/woabot@latest，解压覆盖本地源码，重新安装插件并重启
+# 兼容 clawdbot / openclaw / moltbot
 #
 # 用法:
 #   ./scripts/pull-latest.sh                  # 更新到最新版
-#   ./scripts/pull-latest.sh @sliverp/qqbot@1.5.2   # 更新到指定版本
+#   ./scripts/pull-latest.sh @sliverp/woabot@2.0.1   # 更新到指定版本
 #   ./scripts/pull-latest.sh --force          # 跳过交互，强制重新安装
-#   ./scripts/pull-latest.sh --force @sliverp/qqbot@1.5.3
+#   ./scripts/pull-latest.sh --force @sliverp/woabot@2.0.1
 
 set -e
 
@@ -16,7 +16,7 @@ set -e
 # 参数解析
 # ============================================================
 FORCE=false
-PKG_NAME="@sliverp/qqbot"
+PKG_NAME="@sliverp/woabot"
 PKG_SPEC=""
 
 for arg in "$@"; do
@@ -52,14 +52,14 @@ check_cmd() {
 
 check_cmd node  "请先安装 Node.js: https://nodejs.org/ 或 brew install node"
 check_cmd npm   "npm 通常随 Node.js 一起安装"
-check_cmd tar   "macOS 自带 tar，如果缺失请检查系统完整性"
+check_cmd tar   "系统缺少 tar 命令"
 
 echo "========================================="
-echo "  QQBot 拉取最新版本并更新"
+echo "  WoA Bot 拉取最新版本并更新"
 echo "========================================="
 echo ""
 echo "系统信息:"
-echo "  macOS $(sw_vers -productVersion 2>/dev/null || echo '未知')"
+echo "  OS    $(uname -s) $(uname -r 2>/dev/null | cut -d- -f1)"
 echo "  Node  $(node -v 2>/dev/null)"
 echo "  npm   $(npm -v 2>/dev/null)"
 
@@ -76,7 +76,7 @@ done
 if [ -z "$CMD" ]; then
     echo ""
     echo "❌ 未找到 openclaw / clawdbot / moltbot 命令"
-    echo "   请先安装其中之一，参考: https://docs.openclaw.ai"
+    echo "   请先安装其中之一"
     exit 1
 fi
 echo "  CLI   $CMD ($($CMD --version 2>/dev/null || echo '未知版本'))"
@@ -135,36 +135,25 @@ fi
 echo ""
 echo "[3/5] 备份已有通道配置..."
 
-SAVED_QQBOT_TOKEN=""
-SAVED_MARKDOWN=""
+SAVED_WOABOT_CONFIG=""
 
 for APP_NAME in openclaw clawdbot moltbot; do
     CONFIG_FILE="$HOME/.$APP_NAME/$APP_NAME.json"
     [ -f "$CONFIG_FILE" ] || continue
 
-    if [ -z "$SAVED_QQBOT_TOKEN" ]; then
-        SAVED_QQBOT_TOKEN=$(node -e "
+    if [ -z "$SAVED_WOABOT_CONFIG" ]; then
+        SAVED_WOABOT_CONFIG=$(node -e "
             const cfg = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
-            const ch = cfg.channels && cfg.channels.qqbot;
-            if (!ch) process.exit(0);
-            if (ch.token) { process.stdout.write(ch.token); process.exit(0); }
-            if (ch.appId && ch.clientSecret) { process.stdout.write(ch.appId + ':' + ch.clientSecret); process.exit(0); }
+            const ch = cfg.channels && cfg.channels.woabot;
+            if (ch) process.stdout.write(JSON.stringify(ch));
         " 2>/dev/null || true)
     fi
 
-    if [ -z "$SAVED_MARKDOWN" ]; then
-        SAVED_MARKDOWN=$(node -e "
-            const cfg = JSON.parse(require('fs').readFileSync('$CONFIG_FILE', 'utf8'));
-            const v = (cfg.channels && cfg.channels.qqbot && cfg.channels.qqbot.markdownSupport);
-            if (v !== undefined && v !== null) process.stdout.write(String(v));
-        " 2>/dev/null || true)
-    fi
-
-    [ -n "$SAVED_QQBOT_TOKEN" ] && [ -n "$SAVED_MARKDOWN" ] && break
+    [ -n "$SAVED_WOABOT_CONFIG" ] && break
 done
 
-if [ -n "$SAVED_QQBOT_TOKEN" ]; then
-    echo "已备份 qqbot 通道 token: ${SAVED_QQBOT_TOKEN:0:10}..."
+if [ -n "$SAVED_WOABOT_CONFIG" ]; then
+    echo "已备份 woabot 通道配置"
 else
     echo "未找到已有通道配置（首次安装或已清理）"
 fi
@@ -175,7 +164,7 @@ fi
 echo ""
 echo "[4/5] 下载 $PKG_SPEC 并更新本地文件..."
 
-TMP_DIR="$PROJ_DIR/.qqbot-update-tmp"
+TMP_DIR="$PROJ_DIR/.woabot-update-tmp"
 
 # 清理函数：删除临时文件夹
 cleanup() {
@@ -184,10 +173,8 @@ cleanup() {
         rm -rf "$TMP_DIR"
     fi
 }
-# 正常退出、中断、终止时都清理
 trap cleanup EXIT INT TERM
 
-# 如果上次意外残留，先清理
 [ -d "$TMP_DIR" ] && rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 
@@ -213,10 +200,9 @@ fi
 NEW_VER=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$PACK_DIR/package.json','utf8')).version||'')" 2>/dev/null || echo "$REMOTE_VER")
 echo "将更新到版本: $NEW_VER"
 
-# 同步文件（不用 rsync，用 tar + cp 保证 macOS 原生兼容）
+# 同步文件
 echo "同步文件到本地..."
 
-# 把包中所有文件复制过来，跳过不该覆盖的目录
 (
     cd "$PACK_DIR"
     find . -type f | while IFS= read -r f; do
@@ -231,7 +217,6 @@ echo "同步文件到本地..."
 
 echo "✅ 文件已更新到 $NEW_VER"
 
-# 删除临时文件夹（不等到 EXIT，立即清理）
 echo "删除临时文件夹..."
 rm -rf "$TMP_DIR"
 
@@ -253,11 +238,13 @@ fi
 
 # 强制删除已有扩展目录，防止 "plugin already exists" 错误
 for APP_NAME in openclaw clawdbot moltbot; do
-    EXT_DIR="$HOME/.$APP_NAME/extensions/qqbot"
-    if [ -d "$EXT_DIR" ]; then
-        echo "删除已有扩展目录: $EXT_DIR"
-        rm -rf "$EXT_DIR"
-    fi
+    for EXT_NAME in woabot qqbot; do
+        EXT_DIR="$HOME/.$APP_NAME/extensions/$EXT_NAME"
+        if [ -d "$EXT_DIR" ]; then
+            echo "删除已有扩展目录: $EXT_DIR"
+            rm -rf "$EXT_DIR"
+        fi
+    done
 done
 
 # 安装插件
@@ -270,33 +257,25 @@ fi
 echo "✅ 插件安装成功"
 
 # 恢复通道配置
-if [ -n "$SAVED_QQBOT_TOKEN" ]; then
+if [ -n "$SAVED_WOABOT_CONFIG" ]; then
     echo ""
-    echo "恢复 qqbot 通道配置..."
-    $CMD channels add --channel qqbot --token "$SAVED_QQBOT_TOKEN" 2>&1 || true
-fi
-
-# 恢复 markdown 配置
-if [ "$SAVED_MARKDOWN" = "true" ]; then
-    echo "恢复 Markdown 配置 (已启用)..."
+    echo "恢复 woabot 通道配置..."
     APP_CONFIG="$HOME/.$CMD/$CMD.json"
     if [ -f "$APP_CONFIG" ]; then
         node -e "
           var fs = require('fs');
           var cfg = JSON.parse(fs.readFileSync('$APP_CONFIG', 'utf-8'));
-          if (!cfg.channels) cfg.channels = {};
-          if (!cfg.channels.qqbot) cfg.channels.qqbot = {};
-          cfg.channels.qqbot.markdownSupport = true;
+          cfg.channels = cfg.channels || {};
+          cfg.channels.woabot = $SAVED_WOABOT_CONFIG;
           fs.writeFileSync('$APP_CONFIG', JSON.stringify(cfg, null, 4) + '\n');
-        " 2>/dev/null && echo "✅ Markdown 配置已恢复" || echo "⚠️  Markdown 配置恢复失败"
+        " 2>/dev/null && echo "✅ 通道配置已恢复" || echo "⚠️  通道配置恢复失败"
     fi
 fi
 
-# 重启网关（先确保旧进程停掉，避免无限重启循环）
+# 重启网关
 echo ""
 echo "重启网关服务..."
 
-# 先尝试正常停止
 $CMD gateway stop 2>/dev/null || true
 sleep 1
 
@@ -326,7 +305,7 @@ fi
 
 echo ""
 echo "========================================="
-echo "  ✅ QQBot 已从 ${LOCAL_VER:-未知} 更新到 ${NEW_VER}"
+echo "  ✅ WoA Bot 已从 ${LOCAL_VER:-未知} 更新到 ${NEW_VER}"
 echo "========================================="
 echo ""
 echo "常用命令:"

@@ -1,11 +1,10 @@
 import type { ResolvedWoaBotAccount } from "./types.js";
-import { getLarkClient } from "./client.js";
 
 /**
  * WOA Bot 消息发送模块
  *
- * 通过 Lark SDK 调用 server 的 /open-apis/im/v1/messages 接口发送消息。
- * server 会将 Lark 格式转换为 WPS 格式并调用 WPS OpenAPI。
+ * 通过 fetch 直接调用 server 的 /open-apis/im/v1/messages 接口发送消息。
+ * server 会将消息格式转换为 WPS 格式并调用 WPS OpenAPI。
  */
 
 interface SendResult {
@@ -13,12 +12,15 @@ interface SendResult {
   error?: string;
 }
 
+/** Server API 响应结构 */
+interface ApiResponse {
+  code: number;
+  msg?: string;
+  data?: { message_id?: string };
+}
+
 /**
  * 发送文本消息
- *
- * @param to - 目标地址（chat_id 或 "group:{chat_id}" 格式）
- * @param text - 消息文本
- * @param replyToId - 回复的消息 ID（优先使用 reply 接口）
  */
 export async function sendText(opts: {
   to: string;
@@ -28,9 +30,9 @@ export async function sendText(opts: {
   account: ResolvedWoaBotAccount;
 }): Promise<SendResult> {
   const { to, text, replyToId, account } = opts;
-  const client = getLarkClient(account);
+  const baseUrl = account.domain.replace(/\/+$/, "");
 
-  // 分块发送（Lark post 格式支持 markdown）
+  // 分块发送
   const chunks = chunkText(text, 4000);
 
   let lastMessageId: string | undefined;
@@ -42,45 +44,34 @@ export async function sendText(opts: {
     try {
       // 第一条消息用 reply，后续用 create
       if (i === 0 && replyToId) {
-        const resp = await client.im.v1.message.reply({
-          path: { message_id: replyToId },
-          data: { msg_type: "post", content },
+        const resp = await fetch(`${baseUrl}/open-apis/im/v1/messages/${encodeURIComponent(replyToId)}/reply`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ msg_type: "post", content }),
         });
-        lastMessageId = resp?.data?.message_id;
-      } else {
-        // 解析 chat_id
-        const chatId = parseChatId(to);
-        const resp = await client.im.v1.message.create({
-          params: { receive_id_type: "chat_id" },
-          data: {
-            receive_id: chatId,
-            msg_type: "post",
-            content,
-          },
-        });
-        lastMessageId = resp?.data?.message_id;
-      }
-    } catch (err) {
-      const errMsg = String(err);
-      // 如果 reply 失败（消息已被撤回等），降级为 create
-      if (i === 0 && replyToId && (errMsg.includes("230011") || errMsg.includes("231003"))) {
-        try {
-          const chatId = parseChatId(to);
-          const resp = await client.im.v1.message.create({
-            params: { receive_id_type: "chat_id" },
-            data: {
-              receive_id: chatId,
-              msg_type: "post",
-              content,
-            },
-          });
-          lastMessageId = resp?.data?.message_id;
-        } catch (fallbackErr) {
-          return { error: String(fallbackErr) };
+        const json = await resp.json() as ApiResponse;
+        if (json.code === 0) {
+          lastMessageId = json.data?.message_id;
+        } else {
+          // reply 失败（消息已被撤回等），降级为 create
+          const fallback = await sendCreate(baseUrl, parseChatId(to), content);
+          if (fallback.code === 0) {
+            lastMessageId = fallback.data?.message_id;
+          } else {
+            return { error: `send failed: ${fallback.msg}` };
+          }
         }
       } else {
-        return { error: errMsg };
+        const chatId = parseChatId(to);
+        const json = await sendCreate(baseUrl, chatId, content);
+        if (json.code === 0) {
+          lastMessageId = json.data?.message_id;
+        } else {
+          return { error: `send failed: ${json.msg}` };
+        }
       }
+    } catch (err) {
+      return { error: String(err) };
     }
   }
 
@@ -88,7 +79,23 @@ export async function sendText(opts: {
 }
 
 /**
- * 发送媒体消息（对 WOA 通道简化处理，直接发文本+URL）
+ * POST /open-apis/im/v1/messages 发送新消息
+ */
+async function sendCreate(baseUrl: string, chatId: string, content: string): Promise<ApiResponse> {
+  const resp = await fetch(`${baseUrl}/open-apis/im/v1/messages?receive_id_type=chat_id`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      receive_id: chatId,
+      msg_type: "post",
+      content,
+    }),
+  });
+  return await resp.json() as ApiResponse;
+}
+
+/**
+ * 发送媒体消息（简化处理，直接发文本+URL）
  */
 export async function sendMedia(opts: {
   to: string;
@@ -99,8 +106,6 @@ export async function sendMedia(opts: {
   account: ResolvedWoaBotAccount;
 }): Promise<SendResult> {
   const { to, text, mediaUrl, accountId, replyToId, account } = opts;
-
-  // 将 mediaUrl 附加到文本中
   const fullText = mediaUrl ? `${text}\n${mediaUrl}`.trim() : text;
   return sendText({ to, text: fullText, accountId, replyToId, account });
 }
@@ -109,18 +114,14 @@ export async function sendMedia(opts: {
  * 解析目标地址中的 chat_id
  */
 function parseChatId(to: string): string {
-  // "group:{chat_id}" → chat_id
   if (to.startsWith("group:")) return to.slice(6);
-  // "woabot:group:{chat_id}" → chat_id
   if (to.startsWith("woabot:group:")) return to.slice(13);
-  // "woabot:{id}" → id
   if (to.startsWith("woabot:")) return to.slice(7);
-  // 直接是 chat_id
   return to;
 }
 
 /**
- * 格式化为 Lark post content（rich text markdown）
+ * 格式化为 post content（rich text markdown）
  */
 function formatPostContent(text: string): string {
   return JSON.stringify({

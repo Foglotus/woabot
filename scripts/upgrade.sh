@@ -1,22 +1,11 @@
 #!/bin/bash
-# QQBot 插件升级脚本
+# WoA Bot 插件升级脚本
 # 用于清理旧版本插件并重新安装
-# 兼容 clawdbot 和 openclaw 两种安装
+# 兼容 clawdbot / openclaw / moltbot
 
 set -e
 
-echo "=== QQBot 插件升级脚本 ==="
-
-# 检测使用的是 clawdbot 还是 openclaw
-detect_installation() {
-  if [ -d "$HOME/.clawdbot" ]; then
-    echo "clawdbot"
-  elif [ -d "$HOME/.openclaw" ]; then
-    echo "openclaw"
-  else
-    echo ""
-  fi
-}
+echo "=== WoA Bot 插件升级脚本 ==="
 
 # 清理指定目录的函数
 cleanup_installation() {
@@ -29,30 +18,33 @@ cleanup_installation() {
   echo ">>> 处理 $APP_NAME 安装..."
 
   # 1. 删除所有可能的旧版扩展目录（多历史插件 ID 变体）
-  for dir_name in qqbot openclaw-qqbot openclaw-qq; do
+  for dir_name in woabot qqbot openclaw-qqbot openclaw-qq; do
     if [ -d "$EXTENSION_DIR/$dir_name" ]; then
       echo "删除旧版本插件: $EXTENSION_DIR/$dir_name"
       rm -rf "$EXTENSION_DIR/$dir_name"
     fi
   done
 
-  # 2. 清理配置文件中的 qqbot 相关字段
+  # 2. 清理配置文件中的旧版相关字段
   if [ -f "$CONFIG_FILE" ]; then
-    echo "清理配置文件中的 qqbot 字段..."
+    echo "清理配置文件中的旧版字段..."
     
-    # 使用 node 处理 JSON（比 jq 更可靠处理复杂结构）
     node -e "
       const fs = require('fs');
       const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
       
-      // 删除 channels.qqbot
-      if (config.channels && config.channels.qqbot) {
-        delete config.channels.qqbot;
-        console.log('  - 已删除 channels.qqbot');
+      // 删除 channels.woabot 和 channels.qqbot
+      if (config.channels) {
+        for (const ch of ['woabot', 'qqbot']) {
+          if (config.channels[ch]) {
+            delete config.channels[ch];
+            console.log('  - 已删除 channels.' + ch);
+          }
+        }
       }
       
       // 清理 plugins.entries 中的所有历史插件 ID
-      const legacyIds = ['qqbot', 'openclaw-qqbot', 'openclaw-qq', '@sliverp/qqbot', '@tencent-connect/qqbot', '@tencent-connect/openclaw-qq', '@tencent-connect/openclaw-qqbot'];
+      const legacyIds = ['woabot', 'qqbot', 'openclaw-qqbot', 'openclaw-qq', '@sliverp/woabot', '@sliverp/qqbot', '@tencent-connect/qqbot', '@tencent-connect/openclaw-qq', '@tencent-connect/openclaw-qqbot'];
       if (config.plugins && config.plugins.entries) {
         for (const id of legacyIds) {
           if (config.plugins.entries[id]) {
@@ -115,7 +107,7 @@ echo ""
 echo "=== 清理完成 ==="
 echo ""
 echo "接下来请执行以下命令重新安装插件:"
-echo "  cd /path/to/qqbot"
+echo "  cd /path/to/woabot"
 echo "  $CMD plugins install ."
-echo "  $CMD channels add --channel qqbot --token \"AppID:AppSecret\""
+echo "  # 编辑 ~/.$CMD/$CMD.json 配置 channels.woabot (appId, appSecret, domain)"
 echo "  $CMD gateway restart"

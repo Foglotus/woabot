@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# QQBot 拉取最新源码并更新
+# WoA Bot 拉取最新源码并更新
 # 从 GitHub 拉取最新代码，安装依赖并重启网关
-# 兼容 clawdbot / openclaw / moltbot，macOS 开箱即用
+# 兼容 clawdbot / openclaw / moltbot
 #
 # 用法:
 #   pull-latest.sh                          # 拉取最新代码并更新
@@ -15,7 +15,7 @@ set -euo pipefail
 ##############################################################################
 # 常量 & 参数
 ##############################################################################
-readonly DEFAULT_REPO="https://github.com/sliverp/qqbot.git"
+readonly DEFAULT_REPO="https://github.com/Foglotus/woabot.git"
 readonly GATEWAY_PORT=18789
 readonly SUPPORTED_CLIS=(openclaw clawdbot moltbot)
 
@@ -29,7 +29,7 @@ while [[ $# -gt 0 ]]; do
         -b|--branch) BRANCH="$2"; shift 2 ;;
         --repo) REPO_URL="$2"; shift 2 ;;
         -h|--help)
-            echo "QQBot 拉取最新源码并更新"
+            echo "WoA Bot 拉取最新源码并更新"
             echo ""
             echo "用法:"
             echo "  pull-latest.sh                          # 拉取最新代码并更新"
@@ -58,7 +58,7 @@ json_get() {
 # 环境检查
 ##############################################################################
 printf "%b\n" "\033[32m=========================================\033[0m"
-printf "%b\n" "\033[32m  QQBot 拉取最新源码并更新\033[0m"
+printf "%b\n" "\033[32m  WoA Bot 拉取最新源码并更新\033[0m"
 printf "%b\n" "\033[32m=========================================\033[0m"
 echo ""
 
@@ -71,7 +71,7 @@ for dep in node npm git; do
 done
 
 printf "%b\n" "\033[34m系统信息:\033[0m"
-echo "  macOS  $(sw_vers -productVersion 2>/dev/null || echo '未知')"
+echo "  OS     $(uname -s) $(uname -r 2>/dev/null | cut -d- -f1)"
 echo "  Node   $(node -v)"
 echo "  npm    $(npm -v)"
 echo "  Git    $(git --version 2>/dev/null | awk '{print $3}')"
@@ -102,7 +102,7 @@ PROJ_DIR=""
 FRESH_INSTALL=false
 
 for app in "${SUPPORTED_CLIS[@]}"; do
-    ext_dir="$HOME/.$app/extensions/qqbot"
+    ext_dir="$HOME/.$app/extensions/woabot"
     if [ -d "$ext_dir" ] && [ -f "$ext_dir/package.json" ]; then
         PROJ_DIR="$ext_dir"
         break
@@ -110,7 +110,7 @@ for app in "${SUPPORTED_CLIS[@]}"; do
 done
 
 if [ -z "$PROJ_DIR" ]; then
-    PROJ_DIR="$APP_HOME/extensions/qqbot"
+    PROJ_DIR="$APP_HOME/extensions/woabot"
     FRESH_INSTALL=true
     echo "  插件   未安装（首次安装）"
 else
@@ -145,14 +145,14 @@ for app in "${SUPPORTED_CLIS[@]}"; do
     [ -f "$cfg" ] || continue
     SAVED_CHANNELS_JSON=$(node -e "
         const cfg = JSON.parse(require('fs').readFileSync('$cfg', 'utf8'));
-        const ch = cfg.channels && cfg.channels.qqbot;
+        const ch = cfg.channels && cfg.channels.woabot;
         if (ch) process.stdout.write(JSON.stringify(ch));
     " 2>/dev/null || true)
     [ -n "$SAVED_CHANNELS_JSON" ] && break
 done
 
 if [ -n "$SAVED_CHANNELS_JSON" ]; then
-    echo "  ✅ 已备份 qqbot 通道配置"
+    echo "  ✅ 已备份 woabot 通道配置"
 else
     echo "  ℹ️  未找到已有通道配置"
 fi
@@ -163,7 +163,7 @@ fi
 echo ""
 printf "%b\n" "\033[34m3. 拉取最新代码...\033[0m"
 
-TMP_DIR="${TMPDIR:-/tmp}/qqbot-update-$$"
+TMP_DIR="${TMPDIR:-/tmp}/woabot-update-$$"
 cleanup() { rm -rf "$TMP_DIR" 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
@@ -247,7 +247,7 @@ if [ -n "$SAVED_CHANNELS_JSON" ]; then
         const fs = require('fs');
         const cfg = JSON.parse(fs.readFileSync('$APP_CONFIG', 'utf8'));
         cfg.channels = cfg.channels || {};
-        cfg.channels.qqbot = $SAVED_CHANNELS_JSON;
+        cfg.channels.woabot = $SAVED_CHANNELS_JSON;
         fs.writeFileSync('$APP_CONFIG', JSON.stringify(cfg, null, 4) + '\n');
     " 2>/dev/null; then
         echo "  ✅ 通道配置已恢复"
@@ -256,8 +256,8 @@ if [ -n "$SAVED_CHANNELS_JSON" ]; then
     fi
 elif [ "$FRESH_INSTALL" = true ]; then
     echo ""
-    printf "%b\n" "\033[33m  ⚠️  首次安装，请配置 QQ Bot 凭据:\033[0m"
-    echo "     $CMD channels add --channel qqbot --token 'YOUR_APPID:YOUR_SECRET'"
+    printf "%b\n" "\033[33m  ⚠️  首次安装，请配置 WoA Bot 凭据:\033[0m"
+    echo "     编辑 $APP_CONFIG，在 channels.woabot 中配置 appId、appSecret、domain"
     echo ""
 fi
 
@@ -298,7 +298,7 @@ fi
 ##############################################################################
 echo ""
 printf "%b\n" "\033[32m=========================================\033[0m"
-printf "%b\n" "\033[32m  ✅ QQBot 已更新到 ${NEW_VER}${REMOTE_COMMIT:+ (${REMOTE_COMMIT})}\033[0m"
+printf "%b\n" "\033[32m  ✅ WoA Bot 已更新到 ${NEW_VER}${REMOTE_COMMIT:+ (${REMOTE_COMMIT})}\033[0m"
 [ -n "$LOCAL_VER" ] && printf "%b\n" "\033[32m     (从 ${LOCAL_VER}${LOCAL_COMMIT:+ (${LOCAL_COMMIT})} 升级)\033[0m"
 printf "%b\n" "\033[32m=========================================\033[0m"
 echo ""

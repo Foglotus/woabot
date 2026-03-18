@@ -203,18 +203,6 @@ echo ""
 echo "[5/5] 启动 openclaw..."
 echo "========================================="
 
-# 检查openclaw是否可用
-if ! command -v openclaw &> /dev/null; then
-    echo "❌ 错误: openclaw 命令未找到！"
-    echo ""
-    echo "可能的原因:"
-    echo "1. OpenClaw未安装或安装失败"
-    echo "2. PATH环境变量未包含openclaw路径"
-    echo "3. 需要重新登录或重启终端"
-    echo ""
-    exit 1
-fi
-
 echo "OpenClaw版本: $(openclaw --version 2>/dev/null || echo '未知')"
 echo ""
 echo "请选择启动方式:"

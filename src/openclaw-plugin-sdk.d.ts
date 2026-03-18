@@ -361,6 +361,18 @@ declare module "openclaw/plugin-sdk" {
   // ============ Onboarding 类型 ============
 
   /**
+   * Wizard Prompter — 交互式命令行提示器
+   */
+  export interface WizardPrompter {
+    intro(title: string): Promise<void>;
+    outro(message: string): Promise<void>;
+    note(message: string, title?: string): Promise<void>;
+    text(params: { message: string; initialValue?: string; placeholder?: string; validate?: (value: string | undefined) => string | undefined }): Promise<string>;
+    select<T>(params: { message: string; options: Array<{ value: T; label: string; hint?: string }>; initialValue?: T }): Promise<T>;
+    confirm(params: { message: string; initialValue?: boolean }): Promise<boolean>;
+  }
+
+  /**
    * Onboarding 状态结果
    */
   export interface ChannelOnboardingStatus {
@@ -405,8 +417,8 @@ declare module "openclaw/plugin-sdk" {
     accountId?: string;
     /** 输入参数 */
     input?: Record<string, unknown>;
-    /** Prompter */
-    prompter?: unknown;
+    /** Prompter - 交互式提示器 */
+    prompter?: WizardPrompter;
     /** 其他上下文 */
     [key: string]: unknown;
   }

@@ -1,8 +1,8 @@
-import * as lark from "@larksuiteoapi/node-sdk";
+import WebSocket from "ws";
 import http from "node:http";
+import crypto from "node:crypto";
 import type { ResolvedWoaBotAccount } from "./types.js";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
-import { getLarkClient, clearClientCache } from "./client.js";
 import { getWoaBotRuntime } from "./runtime.js";
 import { sendText } from "./outbound.js";
 import { CHANNEL_KEY } from "./config.js";
@@ -10,9 +10,9 @@ import { CHANNEL_KEY } from "./config.js";
 /**
  * WOA Bot Gateway
  *
- * 通过 @larksuiteoapi/node-sdk 连接到 server 的 Lark 兼容层：
- * - WebSocket 模式：使用 Lark.WSClient 连接到 server 的 /ws
- * - Webhook 模式：启动 HTTP 服务器接收 server POST 的事件
+ * 直接连接 server 的 WebSocket / HTTP 接口（不使用飞书 SDK）：
+ * - WebSocket 模式：先调用 /callback/ws/endpoint 获取 WS URL，再用 ws 包连接
+ * - Webhook 模式：启动 HTTP 服务器接收 server POST 的事件 JSON
  *
  * 收到 im.message.receive_v1 事件后，解析消息并派发到 OpenClaw 框架。
  */
@@ -30,41 +30,45 @@ interface GatewayOptions {
   onError: (error: Error) => void;
 }
 
-/** Lark 事件中的 message 结构 */
-interface LarkMessage {
-  message_id: string;
-  root_id?: string;
-  parent_id?: string;
-  create_time?: string;
-  chat_id: string;
-  chat_type: string;        // "p2p" | "group"
-  message_type: string;     // "text" | "post" | "image" | ...
-  content: string;           // JSON string
-  mentions?: LarkMention[];
+/** Server 推送的 WS event envelope */
+interface WSEventEnvelope {
+  type: string;
+  message_id?: string;
+  data?: WoaBotV2Event;
 }
 
-interface LarkMention {
-  key: string;
-  id: { open_id?: string; user_id?: string; union_id?: string };
-  name: string;
-  tenant_key?: string;
-}
-
-/** Lark 事件中的 sender 结构 */
-interface LarkSender {
-  sender_id: { open_id?: string; user_id?: string; union_id?: string };
-  sender_type: string;     // "user" | "app"
-  tenant_key?: string;
-}
-
-/** im.message.receive_v1 事件 data */
-interface LarkMessageEventData {
-  sender: LarkSender;
-  message: LarkMessage;
+/** WoA Bot v2 事件结构 (im.message.receive_v1) */
+interface WoaBotV2Event {
+  schema?: string;
+  header?: {
+    event_id: string;
+    event_type: string;
+    create_time?: string;
+    token?: string;
+    app_id?: string;
+  };
+  event?: {
+    sender: {
+      sender_id?: { open_id?: string; user_id?: string; union_id?: string };
+      sender_type: string;
+      tenant_key?: string;
+    };
+    message: {
+      message_id: string;
+      root_id?: string;
+      parent_id?: string;
+      create_time: string;
+      chat_id: string;
+      chat_type: string;
+      message_type: string;
+      content: string;
+      mentions?: Array<{ key: string; id: { open_id?: string; user_id?: string; union_id?: string }; name: string }>;
+    };
+  };
 }
 
 /**
- * 从 Lark 消息 content 中提取纯文本
+ * 从消息 content 中提取纯文本
  */
 function extractTextFromContent(messageType: string, contentStr: string): string {
   try {
@@ -73,7 +77,6 @@ function extractTextFromContent(messageType: string, contentStr: string): string
       return (parsed.text as string) ?? "";
     }
     if (messageType === "post") {
-      // post 格式: { zh_cn: { content: [[{ tag: "text", text: "..." }]] } }
       const locale = parsed.zh_cn ?? parsed.en_us ?? parsed.ja_jp;
       if (locale?.content && Array.isArray(locale.content)) {
         const parts: string[] = [];
@@ -89,7 +92,6 @@ function extractTextFromContent(messageType: string, contentStr: string): string
         return parts.join("\n");
       }
     }
-    // 其他类型，尝试拿 text 字段
     if (typeof parsed.text === "string") return parsed.text;
     return contentStr;
   } catch {
@@ -101,91 +103,219 @@ function extractTextFromContent(messageType: string, contentStr: string): string
  * 启动网关
  */
 export async function startGateway(options: GatewayOptions): Promise<void> {
-  const { account, abortSignal, cfg, log, onReady, onError } = options;
-
+  const { account, abortSignal } = options;
   if (abortSignal.aborted) return;
 
-  // 创建事件分发器
-  const eventDispatcher = new lark.EventDispatcher({
-    verificationToken: account.verificationToken,
-    encryptKey: account.encryptKey || undefined,
-  });
-
-  // 注册 im.message.receive_v1 事件处理
-  eventDispatcher.register({
-    "im.message.receive_v1": async (data) => {
-      try {
-        await handleIncomingMessage(data, account, cfg, log);
-      } catch (err) {
-        log?.error(`[woabot:${account.accountId}] Error handling message: ${err}`);
-      }
-    },
-  });
-
   if (account.connectionMode === "webhook") {
-    await startWebhookMode(eventDispatcher, options);
+    await startWebhookMode(options);
   } else {
-    await startWebSocketMode(eventDispatcher, options);
+    await startWebSocketMode(options);
   }
 }
 
+// ─── WebSocket 模式 ──────────────────────────────────────────────────
+
 /**
- * WebSocket 模式：使用 Lark.WSClient 连接到 server
+ * 调用 /callback/ws/endpoint 获取 WebSocket URL
  */
-async function startWebSocketMode(
-  eventDispatcher: lark.EventDispatcher,
-  options: GatewayOptions,
-): Promise<void> {
-  const { account, abortSignal, log, onReady, onError } = options;
-
-  log?.info(`[woabot:${account.accountId}] Starting WebSocket mode → ${account.domain}`);
-
-  const wsClient = new lark.WSClient({
-    appId: account.appId,
-    appSecret: account.appSecret,
-    domain: account.domain,
-    autoReconnect: true,
-    loggerLevel: lark.LoggerLevel.warn,
+async function fetchWSEndpoint(account: ResolvedWoaBotAccount): Promise<{
+  url: string;
+  config: { PingInterval: number; ReconnectInterval: number };
+}> {
+  const endpointUrl = `${account.domain.replace(/\/+$/, "")}/callback/ws/endpoint`;
+  const resp = await fetch(endpointUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ AppID: account.appId, AppSecret: account.appSecret }),
   });
 
-  // Lark WSClient.start() 接受 eventDispatcher 参数
-  const startPromise = wsClient.start({ eventDispatcher });
+  if (!resp.ok) {
+    throw new Error(`WS endpoint handshake failed: ${resp.status} ${resp.statusText}`);
+  }
 
-  // 连接成功后回调
-  // WSClient 没有 onReady 回调，我们在 start() resolve 后认为连接成功
-  startPromise
-    .then(() => {
-      log?.info(`[woabot:${account.accountId}] WebSocket connected`);
-      onReady();
-    })
-    .catch((err: Error) => {
-      log?.error(`[woabot:${account.accountId}] WebSocket connection failed: ${err.message}`);
-      onError(err);
-    });
+  const json = await resp.json() as {
+    code: number;
+    msg?: string;
+    data?: { URL?: string; ClientConfig?: Record<string, number> };
+  };
 
-  // 监听 abort 信号以优雅关闭
-  abortSignal.addEventListener("abort", () => {
-    log?.info(`[woabot:${account.accountId}] Shutting down WebSocket gateway`);
-    clearClientCache(account.accountId);
-  }, { once: true });
+  if (json.code !== 0 || !json.data?.URL) {
+    throw new Error(`WS endpoint error: code=${json.code} msg=${json.msg}`);
+  }
+
+  return {
+    url: json.data.URL,
+    config: {
+      PingInterval: json.data.ClientConfig?.PingInterval ?? 120,
+      ReconnectInterval: json.data.ClientConfig?.ReconnectInterval ?? 120,
+    },
+  };
 }
 
 /**
- * Webhook 模式：启动 HTTP 服务器接收事件
+ * WebSocket 模式：直接连接 server 的 /ws 端点
  */
-async function startWebhookMode(
-  eventDispatcher: lark.EventDispatcher,
-  options: GatewayOptions,
-): Promise<void> {
-  const { account, abortSignal, log, onReady, onError } = options;
+async function startWebSocketMode(options: GatewayOptions): Promise<void> {
+  const { account, abortSignal, cfg, log, onReady, onError } = options;
+
+  log?.info(`[woabot:${account.accountId}] Starting WebSocket mode → ${account.domain}`);
+
+  let endpoint: Awaited<ReturnType<typeof fetchWSEndpoint>>;
+  try {
+    endpoint = await fetchWSEndpoint(account);
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    log?.error(`[woabot:${account.accountId}] WS handshake failed: ${error.message}`);
+    onError(error);
+    return;
+  }
+
+  log?.info(`[woabot:${account.accountId}] Connecting to ${endpoint.url}`);
+
+  const connectWS = () => {
+    if (abortSignal.aborted) return;
+
+    const ws = new WebSocket(endpoint.url);
+
+    let pingTimer: ReturnType<typeof setInterval> | null = null;
+    let connected = false;
+
+    ws.on("open", () => {
+      connected = true;
+      log?.info(`[woabot:${account.accountId}] WebSocket connected`);
+      onReady();
+
+      // 定期发送 ping
+      pingTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping" }));
+        }
+      }, endpoint.config.PingInterval * 1000);
+    });
+
+    ws.on("message", (rawData) => {
+      try {
+        const text = typeof rawData === "string" ? rawData : rawData.toString("utf-8");
+        const envelope = JSON.parse(text) as WSEventEnvelope;
+
+        if (envelope.type === "pong") {
+          log?.debug?.(`[woabot:${account.accountId}] Pong received`);
+          return;
+        }
+
+        if (envelope.type === "event" && envelope.data) {
+          // 发送 ack
+          if (envelope.message_id) {
+            ws.send(JSON.stringify({ type: "ack", message_id: envelope.message_id }));
+          }
+
+          // 处理事件
+          const event = envelope.data;
+          if (event.header?.event_type === "im.message.receive_v1" && event.event) {
+            handleIncomingMessage(event.event, account, cfg, log).catch((err) => {
+              log?.error(`[woabot:${account.accountId}] Error handling message: ${err}`);
+            });
+          }
+        }
+      } catch (err) {
+        log?.error(`[woabot:${account.accountId}] Failed to parse WS message: ${err}`);
+      }
+    });
+
+    ws.on("close", (code, reason) => {
+      if (pingTimer) clearInterval(pingTimer);
+      log?.info(`[woabot:${account.accountId}] WebSocket closed: ${code} ${reason?.toString()}`);
+
+      // 自动重连
+      if (!abortSignal.aborted) {
+        const delay = (endpoint.config.ReconnectInterval + Math.random() * 30) * 1000;
+        log?.info(`[woabot:${account.accountId}] Reconnecting in ${Math.round(delay / 1000)}s...`);
+        setTimeout(connectWS, delay);
+      }
+    });
+
+    ws.on("error", (err) => {
+      log?.error(`[woabot:${account.accountId}] WebSocket error: ${err.message}`);
+      if (!connected) {
+        onError(err);
+      }
+    });
+
+    // 监听 abort 信号
+    abortSignal.addEventListener("abort", () => {
+      log?.info(`[woabot:${account.accountId}] Shutting down WebSocket gateway`);
+      if (pingTimer) clearInterval(pingTimer);
+      ws.close(1000, "gateway shutdown");
+    }, { once: true });
+  };
+
+  connectWS();
+}
+
+// ─── Webhook 模式 ────────────────────────────────────────────────────
+
+/**
+ * Webhook 模式：启动 HTTP 服务器接收 server POST 的事件
+ */
+async function startWebhookMode(options: GatewayOptions): Promise<void> {
+  const { account, abortSignal, cfg, log, onReady, onError } = options;
 
   const port = account.webhookPort;
   const path = account.webhookPath;
   log?.info(`[woabot:${account.accountId}] Starting webhook mode on :${port}${path}`);
 
-  const server = http.createServer(
-    lark.adaptDefault(path, eventDispatcher, { autoChallenge: true })
-  );
+  const server = http.createServer((req, res) => {
+    if (req.method !== "POST" || req.url !== path) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      try {
+        const bodyStr = Buffer.concat(chunks).toString("utf-8");
+        const body = JSON.parse(bodyStr) as Record<string, unknown>;
+
+        // URL verification challenge
+        if (body.challenge) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ challenge: body.challenge }));
+          return;
+        }
+
+        // 解密（如果有 encrypt 字段且配置了 encryptKey）
+        let event: WoaBotV2Event;
+        if (body.encrypt && account.encryptKey) {
+          const decrypted = decryptEvent(body.encrypt as string, account.encryptKey);
+          event = JSON.parse(decrypted) as WoaBotV2Event;
+        } else {
+          event = body as unknown as WoaBotV2Event;
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ code: 0 }));
+
+        // 验证 token
+        if (account.verificationToken && event.header?.token !== account.verificationToken) {
+          log?.error(`[woabot:${account.accountId}] Invalid verification token`);
+          return;
+        }
+
+        // 处理事件
+        if (event.header?.event_type === "im.message.receive_v1" && event.event) {
+          handleIncomingMessage(event.event, account, cfg, log).catch((err) => {
+            log?.error(`[woabot:${account.accountId}] Error handling message: ${err}`);
+          });
+        }
+      } catch (err) {
+        log?.error(`[woabot:${account.accountId}] Webhook parse error: ${err}`);
+        res.writeHead(400);
+        res.end();
+      }
+    });
+  });
 
   await new Promise<void>((resolve, reject) => {
     server.listen(port, () => {
@@ -203,12 +333,25 @@ async function startWebhookMode(
   abortSignal.addEventListener("abort", () => {
     log?.info(`[woabot:${account.accountId}] Shutting down webhook server`);
     server.close();
-    clearClientCache(account.accountId);
   }, { once: true });
 }
 
 /**
- * 处理收到的 Lark 消息事件
+ * 解密 AES-256-CBC 加密事件（与 server 的 encryptWoaBotEvent 对应）
+ */
+function decryptEvent(encrypted: string, key: string): string {
+  const buf = Buffer.from(encrypted, "base64");
+  const iv = buf.subarray(0, 16);
+  const ciphertext = buf.subarray(16);
+  const keyHash = crypto.createHash("sha256").update(key).digest();
+  const decipher = crypto.createDecipheriv("aes-256-cbc", keyHash, iv);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf-8");
+}
+
+// ─── 消息处理 ────────────────────────────────────────────────────────
+
+/**
+ * 处理收到的消息事件
  */
 async function handleIncomingMessage(
   data: {
@@ -339,7 +482,6 @@ async function handleIncomingMessage(
       const id = setTimeout(() => {
         if (!hasResponse) reject(new Error("Response timeout"));
       }, responseTimeout);
-      // 清理引用以避免内存泄漏
       if (typeof id === "object" && "unref" in id) (id as NodeJS.Timeout).unref();
     });
 
@@ -353,7 +495,6 @@ async function handleIncomingMessage(
 
           log?.info(`[woabot:${account.accountId}] deliver: kind=${info.kind}, text.length=${payload.text?.length ?? 0}`);
 
-          // 跳过 tool 中间结果
           if (info.kind === "tool") {
             log?.debug?.(`[woabot:${account.accountId}] Skipping tool deliver`);
             return;
@@ -381,7 +522,6 @@ async function handleIncomingMessage(
 
     await Promise.race([dispatchPromise, timeoutPromise]);
 
-    // dispatch 完成但没有 block 响应，发兜底
     if (!hasBlockResponse && hasResponse) {
       log?.info(`[woabot:${account.accountId}] No block response, sending fallback`);
       try {
@@ -399,7 +539,6 @@ async function handleIncomingMessage(
   } catch (err) {
     log?.error(`[woabot:${account.accountId}] Dispatch error: ${err}`);
 
-    // 发送错误提示
     try {
       await sendText({
         to: targetTo,

@@ -34,13 +34,14 @@
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.59.0"
+    "ws": "^8.18.0"
   },
   "bundledDependencies": [
-    "@larksuiteoapi/node-sdk"
+    "ws"
   ],
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.0",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {

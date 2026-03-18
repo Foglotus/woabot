@@ -11,6 +11,7 @@ import { DEFAULT_ACCOUNT_ID, CHANNEL_KEY, listWoaBotAccountIds, resolveWoaBotAcc
 import { sendText, sendMedia } from "./outbound.js";
 import { startGateway } from "./gateway.js";
 import { getWoaBotRuntime } from "./runtime.js";
+import { woabotOnboardingAdapter } from "./onboarding.js";
 
 /**
  * 简单的文本分块函数
@@ -49,9 +50,10 @@ export const woabotPlugin: ChannelPlugin<ResolvedWoaBotAccount> = {
     label: "WOA Bot",
     selectionLabel: "WOA Bot",
     docsPath: "/docs/channels/woabot",
-    blurb: "Connect to WPS via server's Lark-compatible API layer",
+    blurb: "通过 Server 中转连接 WPS 办公助手",
     order: 50,
   },
+  onboarding: woabotOnboardingAdapter,
   capabilities: {
     chatTypes: ["direct", "group"],
     media: false,

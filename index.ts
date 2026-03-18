@@ -7,7 +7,7 @@ import { setWoaBotRuntime } from "./src/runtime.js";
 const plugin = {
   id: "woabot",
   name: "WOA Bot",
-  description: "WOA Bot channel plugin — connects to WPS via server's Lark-compatible API",
+  description: "WOA Bot channel plugin — 通过 Server 中转连接 WPS 办公助手",
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     setWoaBotRuntime(api.runtime);
@@ -20,7 +20,7 @@ export default plugin;
 export { woabotPlugin } from "./src/channel.js";
 export { setWoaBotRuntime, getWoaBotRuntime } from "./src/runtime.js";
 export * from "./src/types.js";
-export * from "./src/client.js";
 export * from "./src/config.js";
 export * from "./src/gateway.js";
 export * from "./src/outbound.js";
+export * from "./src/onboarding.js";
