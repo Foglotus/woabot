@@ -1,157 +1,131 @@
 ---
 name: woabot-report
-description: |
-  WOA daily report retrieval. Activate when user mentions daily report, 日报, work summary, or today's updates.
+description: "当用户提到日报、工作总结、今日进展、本周汇报、日报人员、谁要写日报、谁没写日报、提醒日报、催日报时，使用该技能。将自然语言请求稳定地映射为日报查询、成员查询或批量提醒调用。"
 ---
 
-# WOA Daily Report Tool
+# WOA 日报技能
 
-Single tool `woa_daily` for fetching daily reports from enabled WOA group chats.
+用于把与日报相关的自然语言请求，转换为稳定、可重复的工具调用。
 
-## Parameters
+目标：
 
-- **period** (required): Time range to query
-  - `today` — 今天
-  - `this_week` — 本周
-  - `last_week` — 上周
-  - `this_month` — 本月
-  - `last_month` — 上月
+详细参数、接口、返回结构和日报识别规则见同目录 `README.md`。
+显式意图路由见 `references/intent-routing.md`。
+固定提醒流程见 `references/remind-workflow.md`。
+固定查询示例见 `references/query-examples.md`。
+固定回复模板见 `references/response-templates.md`。
+边界场景处理见 `references/edge-cases.md`。
 
-- **person** (optional): Person name (fuzzy match). Omit to return all people.
+## 工具映射
 
-## Usage Examples
+### 1. `woa_daily`
 
-### Get today's reports for everyone
+查询日报。
 
-```json
-{ "period": "today" }
-```
+### 2. `woa_daily_members`
 
-### Get this week's reports for a specific person
+查询应写日报的成员列表。
 
-```json
-{ "period": "this_week", "person": "张三" }
-```
+### 3. `woa_daily_remind`
 
-### Get last month's reports
+批量提醒成员写日报。
 
-```json
-{ "period": "last_month" }
-```
+## 第一层：请求意图映射
 
-## API
+按下面规则把用户话术映射为目标动作。
 
-```
-GET {WOA_SERVER_URL}/api/daily?period=<period>&person=<person>
-```
+- “今天谁写了日报”“查今天日报”“看一下日报” -> `woa_daily`
+- “查张三本周日报”“看李四上周总结” -> `woa_daily`
+- “日报人员有哪些”“谁需要写日报” -> `woa_daily_members`
+- “提醒没写日报的人”“催一下今天没交日报的人” -> 组合流程：`woa_daily_members` + `woa_daily` + `woa_daily_remind`
 
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `period` | string | 是 | 时间段：`today` / `this_week` / `last_week` / `this_month` / `last_month` |
-| `person` | string | 否 | 人名（模糊匹配），不传返回所有人 |
+时间映射：
+- 今天 -> `today`
+- 本周 -> `this_week`
+- 上周 -> `last_week`
+- 本月 -> `this_month`
+- 上月 -> `last_month`
 
-### 请求示例
+人名映射：
+- 用户明确指定人员时，传 `person`
+- 用户未指定人员时，不传 `person`
 
-```bash
-# 获取今天所有人的日报
-curl http://127.0.0.1:10086/api/daily?period=today
+澄清规则：
+- 用户只说“查日报”但没有时间范围时，优先追问时间范围
+- 上下文已明确时间范围时，不重复追问
 
-# 获取本周张三的日报
-curl http://127.0.0.1:10086/api/daily?period=this_week&person=张三
-```
+## 第二层：统一执行流程
 
-### 响应示例
+优先使用固定流程，不临时发挥。
 
-```json
-{
-  "code": 0,
-  "msg": "ok",
-  "data": {
-    "period": "today",
-    "start_time": 1741737600,
-    "end_time": 1741823999,
-    "groups_scanned": 3,
-    "items": [...]
-  }
-}
-```
+### 场景 A：查询日报
 
-## How It Works
+执行：
+1. 从用户话术中确定 `period`
+2. 如果指定人员，则补 `person`
+3. 调用 `woa_daily`
 
-1. Reads the list of **enabled** group chats from the database (`tb_wps_group` where `enabled=1`)
-2. For each group, fetches messages within the selected time period via WPS OpenAPI
-3. Filters to human user messages (excludes bots)
-4. Filters out users whose name cannot be resolved from `tb_wps_chat_member` (no nickname → skip)
-5. **Detects daily report format** — only messages matching the daily report template are kept (see below)
-6. Groups results by sender, with person name resolved from `tb_wps_chat_member`
-7. Optionally filters by `person` name (fuzzy match)
+### 场景 B：查询日报成员
 
-## Daily Report Detection
+执行：
+1. 直接调用 `woa_daily_members`
 
-Messages are checked against the daily report format using code-level pattern matching. A message is considered a daily report when it satisfies **at least one** of these conditions:
+### 场景 C：提醒未写日报的人
 
-- **(Date + Keyword)**: Contains a date line AND a work-related keyword
-- **(Keyword + Numbered items)**: Contains a work-related keyword AND numbered list items
+执行顺序必须固定：
+1. 调用 `woa_daily_members` 获取成员列表
+2. 调用 `woa_daily` 查询 `today` 日报
+3. 用成员列表减去已提交日报的人，得到待提醒成员
+4. 把全部待提醒成员的 `member_id` 一次性传给 `woa_daily_remind`
 
-### Patterns
+## 第三层：硬性规则
 
-| Pattern | Examples |
-|---------|----------|
-| **Date** | `2026.3.18`, `2026/3/18`, `2026-03-18`, `3月18日` |
-| **Keyword** | `昨天主要做了`, `今天主要做`, `昨日完成`, `今日计划`, `工作总结`, `工作汇报`, `日报` |
-| **Numbered items** | `1、 ...`, `2、 ...`, `1. ...`, `1）...` |
+这些规则优先级最高。
 
-### Example daily report
+- `period` 只能使用定义好的 5 个枚举值，不要自造值
+- 提醒类请求必须先获取 `member_id`，不要直接拿昵称提醒
+- `woa_daily_remind` 必须一次性传入全部 `member_ids`，不要拆成多次调用
+- `message` 里不要写 `@`，不要写人名，提醒对象由服务端自动处理
+- 如果没有可提醒成员，不调用 `woa_daily_remind`
+- 如果用户要求“提醒某个人”，也要先通过成员列表确认其 `member_id`
+- 用户只想看结果时，优先返回整理后的结论，不要暴露原始接口细节
 
-```
-2026.3.18
-昨天主要做了：
-1、 徐州xc太极项目，反馈银河麒麟X86环境wps卡顿，已提供最新安装包待反馈
-2、 苏州市公安局计划全市推广ai，目前正在确认使用人数
-今天主要做：
-1、 徐州市大数据局文档中台客户反馈最近预览慢问题处理
-```
+## 返回要求
 
-## Response Format
+### 查询日报
 
-返回 `{ code: 0, msg: "ok", data: DailyResult }`，`data` 结构如下：
+- 明确时间范围
+- 按人归纳
+- 优先展示姓名和日报正文
 
-```json
-{
-  "period": "today",
-  "start_time": 1741737600,
-  "end_time": 1741823999,
-  "groups_scanned": 3,
-  "items": [
-    {
-      "person_id": "uid_xxx",
-      "person_name": "张三",
-      "messages": [
-        {
-          "message_id": "msg_xxx",
-          "chat_id": "chat_xxx",
-          "group_name": "项目日报群",
-          "sender_id": "uid_xxx",
-          "sender_name": "张三",
-          "content": { "text": "今日完成..." },
-          "type": "text",
-          "time": 1741780000
-        }
-      ]
-    }
-  ]
-}
-```
+### 查询成员
 
-## Configuration
+- 返回可识别成员信息
+- 优先展示昵称；需要进一步调用时再使用 `member_id`
 
-```yaml
-channels:
-  woa:
-    tools:
-      daily: true # default: true
-```
+### 提醒日报
 
-## Environment
+- 明确说明提醒了哪些人
+- 区分 `sent`、`skipped`、`errors`
 
-- `WOA_SERVER_URL` — Server base URL (default: `http://127.0.0.1:10086`)
+## 常用脚本化心智模型
+
+把用户请求理解为下面三类固定脚本之一：
+
+1. 查询脚本：`解析时间/人员 -> 调用 woa_daily -> 整理结果`
+2. 成员脚本：`调用 woa_daily_members -> 整理结果`
+3. 提醒脚本：`查成员 -> 查今日日报 -> 求差集 -> 批量提醒`
+
+不要跳步，不要混用，不要省略成员解析。
+
+## 最小决策原则
+
+- 能直接映射参数时，不追问
+- 缺少关键参数时，只追问一次
+- 能批量做的事，不拆成多次调用
+- 优先输出整理后的结论，而不是原始接口字段
+
+## 环境
+
+- `WOA_SERVER_URL`：服务地址，默认 `http://127.0.0.1:10086`
+

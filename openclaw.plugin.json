@@ -1,6 +1,7 @@
 {
   "id": "woabot",
   "name": "WOA Bot Channel",
+  "kind": "channel",
   "description": "WOA Bot channel plugin — 通过 Server 中转连接 WPS 办公助手, with report skill",
   "channels": ["woabot"],
   "skills": ["skills/woabot-report"],

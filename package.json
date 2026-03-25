@@ -9,6 +9,7 @@
     "src",
     "skills",
     "index.ts",
+    "setup-entry.ts",
     "tsconfig.json",
     "openclaw.plugin.json",
     "clawdbot.plugin.json",
@@ -27,7 +28,12 @@
   "openclaw": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "channel": {
+      "id": "woabot",
+      "label": "WOA Bot",
+      "blurb": "通过 Server 中转连接 WPS 办公助手"
+    }
   },
   "scripts": {
     "build": "tsc || true",
